@@ -1,0 +1,151 @@
+---
+title: "NYPD shooting analysis"
+output:
+  html_document: default
+  pdf_document: default
+date: "2024-08-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+```
+
+``` {r import_clean_data}
+url = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+data = read_csv(url)
+```
+## Cleaning Data
+First we will take a look at the summary of the initial data and determine which columns are not required. By first looking at the number of values in the data that are N/A we can determine that columns with the majority of the values with an N/A value can be dropped.
+
+``` {r initial_summary}
+na_count <-sapply(data, function(y) sum(length(which(is.na(y)))))
+data.frame(na_count)
+
+```
+Looking at the N/A counts for each column, we can determine that columns such as 'LOC_OF_OCCUR_DESC' and 'LOC_CLASSFCTN_DESC' and 'LOCATION_DESC' can be dropped as they all have a large number of rows which are N/A. Additionally columns such as 'Longitude' and 'Latitude' along with the coordinates can be dropped as well since the data they contain could be summarized by the 'BORO' variable. The 'INCIDENT_KEY' Variable is also not very useful in this analysis so it would also be dropped.
+
+``` {r dropping_columns}
+data <- data %>%
+        select(-c("INCIDENT_KEY", "LOC_OF_OCCUR_DESC", "LOC_CLASSFCTN_DESC", "LOCATION_DESC", "X_COORD_CD", "Y_COORD_CD", "Latitude", "Longitude", "Lon_Lat"))
+data <- data %>%
+        drop_na(JURISDICTION_CODE)
+        
+```
+
+Further looking at the data, many of the rows for information on the perpetrator are missing, so we will be cleaning the rows involving perpetrator information and filling it as UNKOWN for any rows that are missing values
+
+``` {r cleaning_perp}
+data <- data %>%
+        mutate(PERP_AGE_GROUP=replace_na(PERP_AGE_GROUP, 'UNKNOWN')) %>%
+        mutate(PERP_AGE_GROUP=str_replace(PERP_AGE_GROUP, c('\\(null\\)') , "UNKNOWN"))
+data <- data %>%
+        mutate(PERP_SEX=replace_na(PERP_SEX, 'U')) %>%
+        mutate(PERP_SEX=str_replace(PERP_SEX, c('\\(null\\)'), 'U'))
+data <- data %>%
+        mutate(PERP_RACE=replace_na(PERP_RACE, 'UNKNOWN')) %>%
+        mutate(PERP_RACE=str_replace(PERP_RACE, c('\\(null\\)'), 'UNKNOWN'))
+
+```
+Getting a count of each unique variable in perpetrator columns
+
+``` {r count}
+data %>% group_by(PERP_AGE_GROUP) %>% summarise(Count = n())
+
+```
+Looking at unique counts, there are some age ranges that don't make sense like 1020 and 940, those will be dropped
+
+
+Before dropping anything we also take a look at a unique count of the victim data
+
+``` {r count_victim}
+data %>% group_by(VIC_AGE_GROUP) %>% summarise(Count = n())
+```
+Under victim age range, there is only 1 odd value so that needs to be dropped as well.
+
+``` {r dropping_odd, echo=FALSE}
+data_temp <- data[-(which(data$PERP_AGE_GROUP %in% c('1020', '1028', '224', '940'))),]
+data_cleaned <- data_temp[-(which(data_temp$VIC_AGE_GROUP %in% c('1022'))), ]
+```
+Now to see if the Boroughs needs to be cleaned
+
+``` {r check_BORO}
+data %>% group_by(BORO) %>% summarise(Count = n())
+```
+There are no missing values in boroughs, all that's left is to convert date into the proper data type.
+
+``` {r final_clean, echo=FALSE}
+data_final <- data_cleaned %>%
+                mutate(OCCUR_DATE = mdy(OCCUR_DATE)) %>%
+                rename(date = OCCUR_DATE, time = OCCUR_TIME, borough=BORO)
+```
+
+Now to take a look at the cleaned data
+
+``` {r summary}
+summary(data_final)
+```
+A count of N/A values in our final cleaned data showed that there are no more N/A values in the dataset
+
+``` {r final_summary}
+na_count <-sapply(data_final, function(y) sum(length(which(is.na(y)))))
+data.frame(na_count)
+```
+
+## Analysis of data
+
+We will first look at shootings by borough
+``` {r sort_borough}
+shootings_by_borough <- data_final %>%
+                        group_by(borough, VIC_AGE_GROUP) %>%
+                        summarize(shootings = n())
+ggplot(shootings_by_borough, aes(fill=VIC_AGE_GROUP, y=shootings, x=borough)) + 
+  geom_bar(position='dodge', stat='identity') + 
+  ggtitle('Borough Shootings by Age Range') + 
+  guides(fill=guide_legend(title="Age Range"))
+
+```
+
+Looking at the bar graph, it would appear the most shootings occur in Brooklyn with Bronx coming in second and Staten Island with the least shootings. Most shootings occur at the age range of 18-24 and 25-44 but there is still a significant amount of shootings occurring at below the age of 18.
+
+We can also model our data fatality rate in each borough to see which borough has the most fatalities and which ones have the highest percentage of shootings leading to a fatality
+
+``` {r fatality}
+fatality <- data_final %>%
+            group_by(borough) %>%
+            summarise(total = n(), deaths = sum(STATISTICAL_MURDER_FLAG), percentage = deaths/total)
+ggplot(fatality, aes(y=percentage, x=borough)) + 
+  geom_bar(stat = "identity", color="#A7C7E7", fill='#A7C7E7') + 
+  ggtitle('Fatality rate by Borough')
+fatality
+```
+
+Looking at the data of death rates from shootings, most the boroughs have roughly the same fatality rate of around 20% with Staten Island with the highest fatality rate at 21% and Manhattan at only around 18%. One factor that could affect the fatality rate would be the proximity of the shooting to a hospital as well as how fast first responders were able arrive at the scene.
+
+One last metric we could look at would be shootings by race in each borough, since the data one race of the perpetrator is quite lacking for most rows we will focus more on the race of the victim.
+``` {r race}
+race <- data_final %>%
+        group_by(borough, VIC_RACE) %>%
+        summarize(shootings = n())
+ggplot(race, aes(fill=VIC_RACE, y=shootings, x=borough)) + 
+  geom_bar(position='dodge', stat='identity') + 
+  ggtitle('Borough Shootings by Race') + 
+  guides(fill=guide_legend(title="Race"))
+
+```
+
+From the plot above, we can conclude that in all boroughs the most frequent race to become victim to a shooting would be black followed by white Hispanic and then black Hispanic, with the other races falling behind. This could be due to various circumstances such as hate crimes or gang violence and a deeper dive would be required to better understand the data.
+
+## Conclusion
+
+This analysis of NYPD shooting data reveals significant insights into the demographics of shooting victims. The data indicates that individuals aged 18-24 and 25-44 are the most frequently represented age groups among shooting victims. Furthermore, racial analysis shows that Black individuals are the most common victims, followed by White Hispanics and Black Hispanics, with other races having lower representation. These results stay consistent across all 5 boroughs in New York City which could indicate a greater trend.
+
+It is also essential to acknowledge the potential influence of personal bias on this analysis. The media often emphasizes gun violence within minority communities, which may have affected my perception and interpretation of the data. While this report primary focuses on analyzing the results of the data and tries to stick purely to the numbers, it is important to consider that possible factors could lead to a bias in which variables were selected to be analyzed in this report.
+
+
+
+
+
+
+
